@@ -12,16 +12,11 @@ import android.os.Build
 import android.os.Environment
 import android.provider.OpenableColumns
 import android.provider.Settings
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
@@ -56,78 +51,78 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.abk.kernel.R
 import com.abk.kernel.data.model.AbkRuntimeBuildInfo
 import com.abk.kernel.data.model.AbkRuntimeModule
 import com.abk.kernel.data.model.AbkRuntimeStatus
 import com.abk.kernel.ui.components.AbkScreenHorizontalPadding
+import com.abk.kernel.ui.components.ObserveChildPageVisibility
+import com.abk.kernel.ui.components.childPageOverlayEnterTransition
+import com.abk.kernel.ui.components.childPageOverlayExitTransition
+import com.abk.kernel.ui.components.childPageScrimExitTransition
+import com.abk.kernel.ui.components.rememberChildPageBackController
+import com.abk.kernel.ui.components.rememberChildPageOverlayTransition
 import com.abk.kernel.ui.components.ExpressiveSwitch
 import com.abk.kernel.ui.components.ExpressiveHeroCard
 import com.abk.kernel.ui.components.ExpressiveSectionCard
 import com.abk.kernel.ui.components.ExpressiveStatusChip
 import com.abk.kernel.ui.components.ExpressiveTopBar
+import com.abk.kernel.ui.components.ShimmerLinearProgress
+import com.abk.kernel.ui.theme.appPageBackgroundColor
 import com.abk.kernel.ui.theme.uiSurfaceColor
 import com.abk.kernel.ui.webui.ModuleWebUiActivity
 import com.abk.kernel.utils.RootUtils
 import com.abk.kernel.viewmodel.MainViewModel
 import java.io.File
-import kotlin.math.pow
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
-
-private const val RUNTIME_PATCH_BACK_VISUAL_EXPONENT = 1.8f
-private const val RUNTIME_PATCH_BACK_SCALE_DELTA = 0.09f
-private const val RUNTIME_PATCH_BACK_SCRIM_ALPHA = 0.32f
-private const val RUNTIME_PATCH_PAGE_EXIT_DELAY_MS = 280L
-private val RUNTIME_PATCH_BACK_MAX_OFFSET = 56.dp
-private val RUNTIME_PATCH_BACK_MAX_CORNER = 32.dp
 
 @Composable
 fun RuntimeHomeScreen(
     vm: MainViewModel,
+    outerPadding: PaddingValues = PaddingValues(0.dp),
     onSwitchToClassic: () -> Unit,
     onManagerPatchPageVisibleChange: (Boolean) -> Unit = {}
 ) {
     val state by vm.uiState.collectAsState()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
     var showManagerPatchPage by rememberSaveable { mutableStateOf(false) }
-    var managerPatchBackProgress by remember { mutableFloatStateOf(0f) }
+    val managerPatchPageTransition = rememberChildPageOverlayTransition(
+        visible = showManagerPatchPage,
+        label = "runtime-manager-patch"
+    )
     var managerPatchBackEnabled by remember { mutableStateOf(true) }
     val motionScheme = MaterialTheme.motionScheme
-    val animatedManagerPatchBackProgress by animateFloatAsState(
-        targetValue = managerPatchBackProgress.coerceIn(0f, 1f),
-        animationSpec = motionScheme.fastSpatialSpec(),
-        label = "runtime-manager-patch-back-progress"
-    )
-    val visualManagerPatchBackProgress = animatedManagerPatchBackProgress
-        .coerceIn(0f, 1f)
-        .pow(RUNTIME_PATCH_BACK_VISUAL_EXPONENT)
-    val density = LocalDensity.current
-    val managerPatchBackOffsetPx = with(density) { RUNTIME_PATCH_BACK_MAX_OFFSET.toPx() }
-    val managerPatchBackCorner = with(density) {
-        (RUNTIME_PATCH_BACK_MAX_CORNER.toPx() * visualManagerPatchBackProgress).toDp()
-    }
 
     LaunchedEffect(state.runtimeNavigationEnabled, state.rootGranted) {
         if (state.runtimeNavigationEnabled) vm.refreshAbkRuntimeStatus()
     }
 
-    LaunchedEffect(showManagerPatchPage) {
-        onManagerPatchPageVisibleChange(showManagerPatchPage)
-        if (!showManagerPatchPage) {
-            delay(RUNTIME_PATCH_PAGE_EXIT_DELAY_MS)
-            managerPatchBackProgress = 0f
-            managerPatchBackEnabled = true
-            onManagerPatchPageVisibleChange(false)
-        }
+    fun closeManagerPatchPage() {
+        if (!managerPatchBackEnabled) return
+        showManagerPatchPage = false
     }
+
+    val childPageBack = rememberChildPageBackController(
+        enabled = showManagerPatchPage && managerPatchBackEnabled,
+        predictiveBackEnabled = state.predictiveBackEnabled,
+        onBack = ::closeManagerPatchPage,
+    )
+
+    ObserveChildPageVisibility(
+        transition = managerPatchPageTransition,
+        onVisibleChange = onManagerPatchPageVisibleChange,
+        onAfterExitAnimation = {
+            childPageBack.resetProgress()
+            managerPatchBackEnabled = true
+        }
+    )
 
     DisposableEffect(Unit) {
         onDispose {
@@ -136,33 +131,14 @@ fun RuntimeHomeScreen(
         }
     }
 
-    fun closeManagerPatchPage() {
-        if (!managerPatchBackEnabled) return
-        showManagerPatchPage = false
-    }
-
-    PredictiveBackHandler(enabled = showManagerPatchPage && managerPatchBackEnabled && state.predictiveBackEnabled) { progress ->
-        try {
-            progress.collect { backEvent ->
-                managerPatchBackProgress = backEvent.progress.coerceIn(0f, 1f)
-            }
-            closeManagerPatchPage()
-        } catch (_: CancellationException) {
-            managerPatchBackProgress = 0f
-        }
-    }
-
-    BackHandler(enabled = showManagerPatchPage && managerPatchBackEnabled && !state.predictiveBackEnabled) {
-        closeManagerPatchPage()
-    }
-
     BoxWithConstraints(Modifier.fillMaxSize()) {
+        val childPageBottomInset = outerPadding.calculateBottomPadding()
         val childPageModifier = Modifier
             .fillMaxWidth()
-            .height(maxHeight)
+            .height(maxHeight + childPageBottomInset)
 
         Scaffold(
-            containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surface),
+            containerColor = appPageBackgroundColor(uiSurfaceColor(MaterialTheme.colorScheme.surface)),
             topBar = {
                 ExpressiveTopBar(
                     title = "AnyBase Kernel",
@@ -170,10 +146,10 @@ fun RuntimeHomeScreen(
                     scrollBehavior = scrollBehavior,
                     actions = {
                         IconButton(onClick = { vm.refreshAbkRuntimeStatus() }) {
-                            Icon(Icons.Default.Refresh, contentDescription = "刷新运行态信息")
+                            Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.runtime_refresh))
                         }
                         IconButton(onClick = onSwitchToClassic) {
-                            Icon(Icons.Default.SwapHoriz, contentDescription = "切换到完整导航")
+                            Icon(Icons.Default.SwapHoriz, contentDescription = stringResource(R.string.nav_status))
                         }
                     }
                 )
@@ -190,16 +166,14 @@ fun RuntimeHomeScreen(
             ) {
                 RuntimeStatusHeader(
                     runtimeStatus = state.abkRuntimeStatus,
+                    hasNativeManagerPermission = state.hasNativeManagerPermission,
                     loading = state.abkRuntimeLoading,
                     error = state.abkRuntimeError,
                     onRefresh = vm::refreshAbkRuntimeStatus,
                     onOpenManagerPatch = {
-                        if (state.abkRuntimeStatus != null) {
-                            managerPatchBackProgress = 0f
-                            managerPatchBackEnabled = true
-                            onManagerPatchPageVisibleChange(true)
-                            showManagerPatchPage = true
-                        }
+                        childPageBack.resetProgress()
+                        managerPatchBackEnabled = true
+                        showManagerPatchPage = true
                     }
                 )
 
@@ -208,49 +182,41 @@ fun RuntimeHomeScreen(
                     RuntimeBuildParametersCard(runtimeStatus)
                 }
 
-                Spacer(Modifier.height(80.dp))
+                Spacer(Modifier.height(80.dp + outerPadding.calculateBottomPadding()))
             }
         }
 
-        AnimatedVisibility(
-            visible = showManagerPatchPage,
+        managerPatchPageTransition.AnimatedVisibility(
+            visible = { it },
             enter = fadeIn(animationSpec = motionScheme.defaultEffectsSpec()),
-            exit = fadeOut(animationSpec = motionScheme.fastEffectsSpec()),
+            exit = childPageScrimExitTransition(state.predictiveBackEnabled, motionScheme),
             modifier = childPageModifier
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = RUNTIME_PATCH_BACK_SCRIM_ALPHA * visualManagerPatchBackProgress))
+                    .background(Color.Black.copy(alpha = childPageBack.scrimAlpha))
             )
         }
 
-        AnimatedVisibility(
-            visible = showManagerPatchPage,
-            enter = fadeIn(animationSpec = motionScheme.defaultEffectsSpec()) +
-                slideInHorizontally(animationSpec = motionScheme.defaultSpatialSpec()) { width -> width / 4 },
-            exit = fadeOut(animationSpec = motionScheme.fastEffectsSpec()) +
-                slideOutHorizontally(animationSpec = motionScheme.fastSpatialSpec()) { width -> width },
+        managerPatchPageTransition.AnimatedVisibility(
+            visible = { it },
+            enter = childPageOverlayEnterTransition(state.predictiveBackEnabled, motionScheme),
+            exit = childPageOverlayExitTransition(state.predictiveBackEnabled, motionScheme),
             modifier = childPageModifier
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer {
-                        translationX = managerPatchBackOffsetPx * visualManagerPatchBackProgress
-                        scaleX = 1f - RUNTIME_PATCH_BACK_SCALE_DELTA * visualManagerPatchBackProgress
-                        scaleY = 1f - RUNTIME_PATCH_BACK_SCALE_DELTA * visualManagerPatchBackProgress
-                        alpha = 1f - 0.06f * visualManagerPatchBackProgress
-                        shape = RoundedCornerShape(managerPatchBackCorner)
-                        clip = visualManagerPatchBackProgress > 0.01f
-                    }
+                    .then(childPageBack.backTransformModifier())
             ) {
                 AbkRootPatchScreen(
                     rootGranted = state.rootGranted,
+                    hasNativeManagerPermission = state.hasNativeManagerPermission,
                     runtimeVariant = state.abkRuntimeStatus?.manager?.variant.orEmpty(),
                     backgroundUri = state.customBackgroundUri,
                     backgroundImageEnabled = state.backgroundImageEnabled,
-                    onBack = ::closeManagerPatchPage,
+                    onBack = childPageBack::requestDismiss,
                     onBackEnabledChange = { managerPatchBackEnabled = it }
                 )
             }
@@ -261,6 +227,7 @@ fun RuntimeHomeScreen(
 @Composable
 fun InstalledModulesScreen(
     vm: MainViewModel,
+    outerPadding: PaddingValues = PaddingValues(0.dp),
     pendingModuleInstallUri: String? = null,
     onPendingModuleInstallUriConsumed: () -> Unit = {}
 ) {
@@ -286,6 +253,7 @@ fun InstalledModulesScreen(
                     .thenBy { it.displayName().lowercase() }
             )
     }
+    val groupedModules = remember(modules) { groupRuntimeModulesForDisplay(modules) }
 
     fun appendInstallLog(line: String) {
         scope.launch(Dispatchers.Main.immediate) {
@@ -302,7 +270,7 @@ fun InstalledModulesScreen(
             "${'$'} module install",
             "source: $uri",
             "",
-            "正在复制模块文件..."
+            context.getString(R.string.runtime_copying_module)
         )
         scope.launch {
             var stagedName = "module.zip"
@@ -315,14 +283,14 @@ fun InstalledModulesScreen(
                         stagedPath = it.absolutePath
                     }
                     appendInstallLog("file: $stagedPath")
-                    appendInstallLog("等待 root shell 返回，请不要退出应用...")
+                    appendInstallLog(context.getString(R.string.runtime_wait_root_shell))
                     if (!RootUtils.refreshRootState()) {
-                        RootUtils.ShellResult(false, listOf("管理器未激活"))
+                        RootUtils.ShellResult(false, listOf(context.getString(R.string.runtime_manager_inactive)))
                     } else {
                         RootUtils.installModule(stagedPath, ::appendInstallLog)
                     }
                 }.getOrElse {
-                    RootUtils.ShellResult(false, listOf("模块文件读取失败"))
+                    RootUtils.ShellResult(false, listOf(context.getString(R.string.runtime_module_file_read_failed)))
                 }.also {
                     stagedFile?.delete()
                 }
@@ -331,10 +299,16 @@ fun InstalledModulesScreen(
             installSuccess = result.success
             installLog = listOf(
                 "${'$'} module install $stagedName",
-                "file: ${stagedPath.ifBlank { "未创建临时文件" }}",
+                "file: ${stagedPath.ifBlank { context.getString(R.string.runtime_temp_file_missing) }}",
                 ""
             ) + result.output.ifEmpty {
-                listOf(if (result.success) "模块安装完成，无输出。" else "模块安装失败，但未返回日志。")
+                listOf(
+                    if (result.success) {
+                        context.getString(R.string.runtime_module_install_done_no_output)
+                    } else {
+                        context.getString(R.string.runtime_module_install_failed_no_log)
+                    }
+                )
             }
             if (result.success) vm.refreshAbkRuntimeStatus()
         }
@@ -402,14 +376,14 @@ fun InstalledModulesScreen(
     }
 
     Scaffold(
-        containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surface),
+        containerColor = appPageBackgroundColor(uiSurfaceColor(MaterialTheme.colorScheme.surface)),
         topBar = {
             ExpressiveTopBar(
-                title = "已安装模块",
+                title = stringResource(R.string.runtime_installed_modules_title),
                 scrollBehavior = scrollBehavior,
                 actions = {
                     IconButton(onClick = { vm.refreshAbkRuntimeStatus() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "刷新已安装模块")
+                        Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.runtime_refresh_installed_modules))
                     }
                 }
             )
@@ -419,10 +393,11 @@ fun InstalledModulesScreen(
                 onClick = {
                     launchModulePickerWithPermissionCheck()
                 },
+                modifier = Modifier.padding(bottom = outerPadding.calculateBottomPadding()),
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer
             ) {
-                Icon(Icons.Default.UploadFile, contentDescription = "安装模块")
+                Icon(Icons.Default.UploadFile, contentDescription = stringResource(R.string.runtime_install_module))
             }
         }
     ) { padding ->
@@ -438,43 +413,72 @@ fun InstalledModulesScreen(
             RuntimeModuleSearchField(query, onValueChange = { query = it })
 
             if (state.abkRuntimeLoading) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                ShimmerLinearProgress(
+                    progress = { null },
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
 
             state.abkRuntimeError?.let {
                 RuntimeErrorCard(
-                    message = if (state.abkRuntimeStatus == null) it else "操作未完成，请刷新后重试",
+                    message = if (state.abkRuntimeStatus == null || !state.hasNativeManagerPermission) {
+                        it
+                    } else {
+                        stringResource(R.string.runtime_operation_incomplete_retry)
+                    },
                     onRefresh = vm::refreshAbkRuntimeStatus
                 )
             }
 
             if (state.abkRuntimeStatus != null && modules.isEmpty()) {
                 Text(
-                    text = if (query.isBlank()) "当前内核没有上报 ABK 外部模块" else "没有匹配的模块",
+                    text = if (query.isBlank()) {
+                        stringResource(R.string.runtime_no_reported_modules)
+                    } else {
+                        stringResource(R.string.runtime_no_matching_modules)
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = 24.dp)
                 )
             } else {
-                modules.forEach { module ->
-                    InstalledRuntimeModuleCard(
-                        module = module,
-                        actionInFlight = state.abkRuntimeModuleActionId == module.id,
-                        onSetEnabled = { enabled -> vm.setAbkRuntimeModuleEnabled(module.id, enabled) },
-                        onRequestUninstall = { uninstallTarget = module },
-                        onRunAction = { vm.runRuntimeModuleAction(module.id) },
-                        onOpenWebUi = {
-                            context.startActivity(
-                                Intent(context, ModuleWebUiActivity::class.java)
-                                    .putExtra(ModuleWebUiActivity.EXTRA_MODULE_ID, module.id)
-                                    .putExtra(ModuleWebUiActivity.EXTRA_MODULE_NAME, module.displayName())
+                groupedModules.forEach { grouped ->
+                    grouped.groupName?.let { groupName ->
+                        Text(
+                            text = groupName,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                        grouped.groupDescription?.takeIf { it.isNotBlank() }?.let { description ->
+                            Text(
+                                text = description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                    )
+                    }
+                    grouped.modules.forEach { module ->
+                        InstalledRuntimeModuleCard(
+                            module = module,
+                            actionInFlight = state.abkRuntimeModuleActionId == module.id,
+                            onSetEnabled = { enabled -> vm.setAbkRuntimeModuleEnabled(module.id, enabled) },
+                            onRequestUninstall = { uninstallTarget = module },
+                            onRunAction = { vm.runRuntimeModuleAction(module.id) },
+                            onOpenWebUi = {
+                                context.startActivity(
+                                    Intent(context, ModuleWebUiActivity::class.java)
+                                        .putExtra(ModuleWebUiActivity.EXTRA_MODULE_ID, module.id)
+                                        .putExtra(ModuleWebUiActivity.EXTRA_MODULE_NAME, module.displayName())
+                                )
+                            }
+                        )
+                    }
                 }
             }
 
-            Spacer(Modifier.height(80.dp))
+            Spacer(Modifier.height(80.dp + outerPadding.calculateBottomPadding()))
         }
     }
 
@@ -482,18 +486,23 @@ fun InstalledModulesScreen(
         AlertDialog(
             onDismissRequest = vm::dismissRuntimeModuleActionOutput,
             confirmButton = {
-                TextButton(onClick = vm::dismissRuntimeModuleActionOutput) {
-                    Text("关闭")
+            TextButton(onClick = vm::dismissRuntimeModuleActionOutput) {
+                    Text(stringResource(R.string.close))
                 }
             },
             title = { Text(state.abkRuntimeModuleActionTitle.orEmpty()) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (state.abkRuntimeModuleActionId != null) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        ShimmerLinearProgress(
+                            progress = { null },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                     Text(
-                        text = state.abkRuntimeModuleActionOutput.ifEmpty { listOf("等待输出...") }.joinToString("\n"),
+                        text = state.abkRuntimeModuleActionOutput.ifEmpty {
+                            listOf(stringResource(R.string.runtime_waiting_output))
+                        }.joinToString("\n"),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface
                     )
@@ -557,29 +566,38 @@ fun InstalledModulesScreen(
 @Composable
 private fun RuntimeStatusHeader(
     runtimeStatus: AbkRuntimeStatus?,
+    hasNativeManagerPermission: Boolean,
     loading: Boolean,
     error: String?,
     onRefresh: () -> Unit,
     onOpenManagerPatch: (() -> Unit)? = null
 ) {
-    val clickableModifier = if (runtimeStatus != null && onOpenManagerPatch != null) {
+    val clickableModifier = if (onOpenManagerPatch != null) {
         Modifier.clickable(onClick = onOpenManagerPatch)
     } else {
         Modifier
     }
     ExpressiveHeroCard(
-        title = if (runtimeStatus != null) "管理器已激活" else "管理器未激活",
+        title = when {
+            runtimeStatus != null && hasNativeManagerPermission -> stringResource(R.string.runtime_manager_active)
+            runtimeStatus != null -> stringResource(R.string.runtime_manager_inactive_title)
+            else -> stringResource(R.string.runtime_manager_inactive_title)
+        },
         subtitle = runtimeStatus?.let {
-            val managerName = it.manager?.displayName?.takeIf { name -> name.isNotBlank() } ?: "Root"
-            "$managerName · ABK ${it.abkVersion.ifBlank { "unknown" }} · ${it.modules.size} 个模块"
-        } ?: (error ?: "安装并启用支持管理器的内核后可查看运行态信息"),
-        icon = if (runtimeStatus != null) Icons.Default.CheckCircle else Icons.Default.Error,
-        containerColor = if (runtimeStatus != null) {
+            if (!hasNativeManagerPermission && !error.isNullOrBlank()) {
+                error
+            } else {
+                val managerName = it.manager?.displayName?.takeIf { name -> name.isNotBlank() } ?: "Root"
+                "$managerName · ABK ${it.abkVersion.ifBlank { "unknown" }} · ${stringResource(R.string.runtime_module_count, it.modules.size)}"
+            }
+        } ?: (error ?: stringResource(R.string.runtime_inactive_desc)),
+        icon = if (runtimeStatus != null && hasNativeManagerPermission) Icons.Default.CheckCircle else Icons.Default.Error,
+        containerColor = if (runtimeStatus != null && hasNativeManagerPermission) {
             MaterialTheme.colorScheme.primaryContainer
         } else {
             MaterialTheme.colorScheme.surfaceVariant
         },
-        contentColor = if (runtimeStatus != null) {
+        contentColor = if (runtimeStatus != null && hasNativeManagerPermission) {
             MaterialTheme.colorScheme.onPrimaryContainer
         } else {
             MaterialTheme.colorScheme.onSurfaceVariant
@@ -613,7 +631,7 @@ private fun RuntimeStatusHeader(
                 } else {
                     Icon(Icons.Default.Refresh, null, modifier = Modifier.size(17.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("重新检测")
+                    Text(stringResource(R.string.runtime_recheck))
                 }
             }
         }
@@ -625,22 +643,22 @@ private fun RuntimeManagerCard(runtimeStatus: AbkRuntimeStatus) {
     val manager = runtimeStatus.manager ?: return
     val backend = runtimeStatus.runtimeBackend
     ExpressiveSectionCard(
-        title = "内核管理器",
-        subtitle = "编译身份与当前运行后端",
+        title = stringResource(R.string.runtime_manager_title),
+        subtitle = stringResource(R.string.runtime_manager_desc),
         icon = Icons.Default.Memory
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-            RuntimeInfoRow("类型", manager.displayName.ifBlank { manager.variant })
-            RuntimeInfoRow("版本", manager.version)
-            RuntimeInfoRow("来源", runtimeBackendLabel(manager.backend))
+            RuntimeInfoRow(stringResource(R.string.runtime_type), manager.displayName.ifBlank { manager.variant })
+            RuntimeInfoRow(stringResource(R.string.runtime_version), manager.version)
+            RuntimeInfoRow(stringResource(R.string.runtime_source), runtimeBackendLabel(manager.backend))
             runtimeStatus.workMode.takeIf { it.isNotBlank() }?.let { workMode ->
-                RuntimeInfoRow("工作模式", runtimeWorkModeLabel(workMode))
+                RuntimeInfoRow(stringResource(R.string.runtime_work_mode), runtimeWorkModeLabel(workMode))
             }
             if (backend != null && backend != manager) {
                 Spacer(Modifier.height(2.dp))
-                RuntimeInfoRow("运行后端", backend.displayName.ifBlank { backend.variant })
-                RuntimeInfoRow("后端版本", backend.version)
-                RuntimeInfoRow("兼容层", runtimeBackendLabel(backend.backend))
+                RuntimeInfoRow(stringResource(R.string.runtime_backend), backend.displayName.ifBlank { backend.variant })
+                RuntimeInfoRow(stringResource(R.string.runtime_backend_version), backend.version)
+                RuntimeInfoRow(stringResource(R.string.runtime_compat_layer), runtimeBackendLabel(backend.backend))
             }
             val diagnostics = manager.diagnostics
                 .plus(backend?.diagnostics.orEmpty())
@@ -654,7 +672,7 @@ private fun RuntimeManagerCard(runtimeStatus: AbkRuntimeStatus) {
             }
             val chips = manager.capabilities
                 .plus(backend?.capabilities.orEmpty())
-                .map(::runtimeCapabilityLabel)
+                .map { runtimeCapabilityLabel(it) }
                 .ifEmpty { listOf("Root Shell") }
                 .distinct()
             Row(
@@ -674,13 +692,13 @@ private fun RuntimeBuildParametersCard(runtimeStatus: AbkRuntimeStatus) {
     val build = runtimeStatus.build
     val systemKernelVersion = remember { RootUtils.getKernelVersion() }
     ExpressiveSectionCard(
-        title = "当前内核编译参数",
-        subtitle = "来自编译器写入的构建记录",
+        title = stringResource(R.string.runtime_build_params_title),
+        subtitle = stringResource(R.string.runtime_build_params_desc),
         icon = Icons.Default.Tune
     ) {
         if (build == null) {
             Text(
-                text = "当前设备输出为旧版 schema，未包含编译参数。",
+                text = stringResource(R.string.runtime_old_schema),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -689,14 +707,14 @@ private fun RuntimeBuildParametersCard(runtimeStatus: AbkRuntimeStatus) {
 
         Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
             RuntimeInfoRow("Android", build.androidVersion)
-            RuntimeInfoRow("目标内核", listOf(build.kernelVersion, build.subLevel).filter { it.isNotBlank() }.joinToString("."))
-            RuntimeInfoRow("内核版本", systemKernelVersion)
-            RuntimeInfoRow("补丁级别", build.osPatchLevel)
-            RuntimeInfoRow("修订版本", build.revision)
+            RuntimeInfoRow(stringResource(R.string.runtime_target_kernel), listOf(build.kernelVersion, build.subLevel).filter { it.isNotBlank() }.joinToString("."))
+            RuntimeInfoRow(stringResource(R.string.build_kernel_version), systemKernelVersion)
+            RuntimeInfoRow(stringResource(R.string.runtime_patch_level), build.osPatchLevel)
+            RuntimeInfoRow(stringResource(R.string.runtime_revision), build.revision)
             RuntimeInfoRow("KSU", listOf(build.kernelsuVariant, build.kernelsuBranch).filter { it.isNotBlank() }.joinToString(" / "))
-            RuntimeInfoRow("构建时间", build.buildTime)
-            RuntimeInfoRow("虚拟化", build.virtualizationSupport)
-            RuntimeInfoRow("ZRAM 额外算法", build.zramExtraAlgos)
+            RuntimeInfoRow(stringResource(R.string.runtime_build_time), build.buildTime)
+            RuntimeInfoRow(stringResource(R.string.runtime_virtualization), build.virtualizationSupport)
+            RuntimeInfoRow(stringResource(R.string.runtime_zram_extra_algos), build.zramExtraAlgos)
             RuntimeInfoRow("ABK", listOf(runtimeStatus.abkVersion, runtimeStatus.abkCommit).filter { it.isNotBlank() }.joinToString(" · "))
             RuntimeFeatureChips(build)
         }
@@ -708,8 +726,8 @@ private fun RuntimeFeatureChips(build: AbkRuntimeBuildInfo) {
     val features = build.features
         .filterValues { it }
         .keys
-        .map(::runtimeFeatureLabel)
-        .ifEmpty { listOf("基础配置") }
+        .map { runtimeFeatureLabel(it) }
+        .ifEmpty { listOf(stringResource(R.string.runtime_basic_config)) }
     Row(
         modifier = Modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -765,7 +783,7 @@ private fun RuntimeErrorCard(
                 color = MaterialTheme.colorScheme.onErrorContainer
             )
             Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
-                Text("重新检测")
+                Text(stringResource(R.string.runtime_recheck))
             }
         }
     }
@@ -778,7 +796,7 @@ private fun RuntimeModuleSearchField(value: String, onValueChange: (String) -> U
         onValueChange = onValueChange,
         modifier = Modifier.fillMaxWidth(),
         leadingIcon = { Icon(Icons.Default.Search, null) },
-        placeholder = { Text("搜索已安装模块") },
+        placeholder = { Text(stringResource(R.string.runtime_search_installed_modules)) },
         singleLine = true,
         shape = RoundedCornerShape(14.dp)
     )
@@ -822,8 +840,7 @@ private fun InstalledRuntimeModuleCard(
                     if (module.version.isNotBlank()) {
                         Text(
                             text = buildString {
-                                append("版本: ")
-                                append(module.version)
+                                append(stringResource(R.string.runtime_module_version, module.version))
                                 if (module.versionCode > 0) append(" (${module.versionCode})")
                             },
                             style = MaterialTheme.typography.bodySmall,
@@ -832,7 +849,7 @@ private fun InstalledRuntimeModuleCard(
                     }
                     if (module.author.isNotBlank()) {
                         Text(
-                            text = "作者: ${module.author}",
+                            text = stringResource(R.string.runtime_module_author, module.author),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -867,16 +884,16 @@ private fun InstalledRuntimeModuleCard(
                 RuntimeModuleChip(runtimeModuleTypeLabel(module), secondary = true)
                 if (module.stage.isNotBlank()) RuntimeModuleChip(module.stage, secondary = true)
                 if (module.source.isNotBlank()) RuntimeModuleChip(runtimeModuleSourceLabel(module.source), secondary = true)
-                RuntimeModuleChip(if (module.enabled) "已启用" else "已关闭", secondary = !module.enabled)
-                if (module.update) RuntimeModuleChip("待更新", secondary = true)
-                if (module.remove) RuntimeModuleChip("待卸载", secondary = true)
+                RuntimeModuleChip(if (module.enabled) stringResource(R.string.runtime_enabled) else stringResource(R.string.runtime_disabled), secondary = !module.enabled)
+                if (module.update) RuntimeModuleChip(stringResource(R.string.runtime_pending_update), secondary = true)
+                if (module.remove) RuntimeModuleChip(stringResource(R.string.runtime_pending_remove), secondary = true)
                 if (module.hasWebUi) RuntimeModuleChip("WebUI", secondary = true)
                 if (module.actionSupported || module.hasActionScript) RuntimeModuleChip("Action", secondary = true)
                 RuntimeModuleChip(
                     when {
-                        module.readonly -> "只读"
-                        module.controllable -> "可控制"
-                        else -> "仅元数据"
+                        module.readonly -> stringResource(R.string.runtime_readonly)
+                        module.controllable -> stringResource(R.string.runtime_controllable)
+                        else -> stringResource(R.string.runtime_metadata_only)
                     },
                     secondary = !module.controllable || module.readonly
                 )
@@ -906,7 +923,7 @@ private fun InstalledRuntimeModuleCard(
                             onClick = onOpenWebUi,
                             enabled = module.enabled && !module.remove && !module.update
                         ) {
-                            Icon(Icons.Default.Web, contentDescription = "打开 WebUI")
+                            Icon(Icons.Default.Web, contentDescription = stringResource(R.string.runtime_open_webui))
                         }
                     }
                     if (module.actionSupported) {
@@ -914,7 +931,7 @@ private fun InstalledRuntimeModuleCard(
                             onClick = onRunAction,
                             enabled = module.enabled && !actionInFlight
                         ) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = "执行 Action")
+                            Icon(Icons.Default.PlayArrow, contentDescription = stringResource(R.string.runtime_run_action))
                         }
                     }
                     if (canUninstall) {
@@ -924,7 +941,7 @@ private fun InstalledRuntimeModuleCard(
                         ) {
                             Icon(
                                 if (module.remove) Icons.Default.RestartAlt else Icons.Default.Delete,
-                                contentDescription = if (module.remove) "撤销卸载" else "卸载模块",
+                                contentDescription = if (module.remove) stringResource(R.string.runtime_reboot) else stringResource(R.string.root_auth_umount_modules),
                                 tint = if (module.remove) {
                                     MaterialTheme.colorScheme.primary
                                 } else {
@@ -948,12 +965,12 @@ private fun RuntimeModuleFileAccessDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Default.FolderOpen, null) },
-        title = { Text("需要文件访问权限") },
+        title = { Text(stringResource(R.string.runtime_file_access_required)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("部分机型会把模块 zip 选择导向厂商安全选择器，可能无法返回真实文件。")
+                Text(stringResource(R.string.runtime_file_access_vendor_picker_warning))
                 Text(
-                    text = "授予所有文件访问权限后，ABK 会继续打开模块选择器；如果不想授权，也可以继续使用系统文件选择器。",
+                    text = stringResource(R.string.runtime_file_access_desc),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -961,12 +978,12 @@ private fun RuntimeModuleFileAccessDialog(
         },
         confirmButton = {
             Button(onClick = onGrantAccess) {
-                Text("授予权限")
+                Text(stringResource(R.string.runtime_grant_permission))
             }
         },
         dismissButton = {
             TextButton(onClick = onUseSystemPicker) {
-                Text("系统选择器")
+                Text(stringResource(R.string.runtime_system_picker))
             }
         }
     )
@@ -982,7 +999,7 @@ private fun RuntimeModuleInstallConfirmDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Default.UploadFile, null) },
-        title = { Text("确认刷写模块") },
+        title = { Text(stringResource(R.string.runtime_confirm_flash_module)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
@@ -1000,7 +1017,7 @@ private fun RuntimeModuleInstallConfirmDialog(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = "确认后会调用当前系统可用的模块安装器，安装完成通常需要重启后生效。",
+                    text = stringResource(R.string.runtime_confirm_flash_module_desc),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1010,12 +1027,12 @@ private fun RuntimeModuleInstallConfirmDialog(
             Button(onClick = onConfirm) {
                 Icon(Icons.Default.UploadFile, null, modifier = Modifier.size(17.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("确认刷写")
+                Text(stringResource(R.string.runtime_confirm_flash))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("取消")
+                Text(stringResource(R.string.cancel))
             }
         }
     )
@@ -1028,11 +1045,11 @@ private fun RuntimeModuleUninstallConfirmDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    val title = if (pending) "确认卸载模块" else "撤销卸载模块"
+    val title = if (pending) stringResource(R.string.runtime_confirm_uninstall_module) else stringResource(R.string.runtime_revoke_uninstall_module)
     val message = if (pending) {
-        "确认后会将该普通模块标记为待卸载，重启后由 KernelSU 完成删除。"
+        stringResource(R.string.runtime_confirm_uninstall_module_desc)
     } else {
-        "确认后会移除待卸载标记，模块将继续保留。"
+        stringResource(R.string.runtime_revoke_uninstall_module_desc)
     }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1082,12 +1099,12 @@ private fun RuntimeModuleUninstallConfirmDialog(
                     modifier = Modifier.size(17.dp)
                 )
                 Spacer(Modifier.width(4.dp))
-                Text(if (pending) "卸载" else "撤销")
+                Text(if (pending) stringResource(R.string.runtime_uninstall) else stringResource(R.string.runtime_revoke))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("取消")
+                Text(stringResource(R.string.cancel))
             }
         }
     )
@@ -1124,7 +1141,9 @@ private fun RuntimeModuleInstallDialog(
                 else -> Icon(Icons.Default.UploadFile, null)
             }
         },
-        title = { Text(if (running) "正在安装模块" else "安装模块") },
+        title = {
+            Text(if (running) stringResource(R.string.runtime_installing_module) else stringResource(R.string.runtime_install_module))
+        },
         text = {
             Surface(
                 modifier = Modifier.fillMaxWidth().heightIn(min = 190.dp, max = 360.dp),
@@ -1140,7 +1159,7 @@ private fun RuntimeModuleInstallDialog(
                         .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    logLines.ifEmpty { listOf("等待输出...") }.forEach { line ->
+                    logLines.ifEmpty { listOf(stringResource(R.string.runtime_waiting_output)) }.forEach { line ->
                         Text(
                             text = line,
                             style = MaterialTheme.typography.labelSmall,
@@ -1153,10 +1172,10 @@ private fun RuntimeModuleInstallDialog(
         },
         confirmButton = {
             if (running) {
-                TextButton(onClick = {}, enabled = false) { Text("执行中") }
+                TextButton(onClick = {}, enabled = false) { Text(stringResource(R.string.runtime_running)) }
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = onClose) { Text("关闭") }
+                TextButton(onClick = onClose) { Text(stringResource(R.string.close)) }
                     if (success == true) {
                         Button(
                             onClick = onReboot,
@@ -1164,7 +1183,7 @@ private fun RuntimeModuleInstallDialog(
                         ) {
                             Icon(Icons.Default.RestartAlt, null, modifier = Modifier.size(17.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("重启")
+                            Text(stringResource(R.string.runtime_reboot))
                         }
                     }
                 }
@@ -1223,47 +1242,50 @@ private fun AbkRuntimeModule.repoName(): String =
         .substringAfterLast('/')
         .ifBlank { "unknown" }
 
+@Composable
 private fun runtimeFeatureLabel(key: String): String = when (key) {
     "use_zram" -> "ZRAM"
     "use_bbg" -> "BBG"
     "use_ddk" -> "DDK"
     "use_ntsync" -> "NTsync"
-    "use_networking" -> "网络增强"
+    "use_networking" -> stringResource(R.string.runtime_feature_networking)
     "use_kpm" -> "KPM"
     "use_rekernel" -> "Re-Kernel"
     "enable_susfs" -> "SUSFS"
     "supp_op" -> "SukiSU SUS_SU"
-    "zram_full_algo" -> "ZRAM 完整算法"
-    "cancel_susfs" -> "SUSFS 已取消"
+    "zram_full_algo" -> stringResource(R.string.runtime_feature_zram_full_algo)
+    "cancel_susfs" -> stringResource(R.string.runtime_feature_cancel_susfs)
     else -> key
 }
 
+@Composable
 private fun runtimeCapabilityLabel(key: String): String =
     if (key == internalRuntimeControlCapability()) {
-        "ABK 控制"
+        stringResource(R.string.runtime_cap_abk_control)
     } else {
         when (key) {
             "root_shell" -> "Root Shell"
-            "native_manager" -> "原生管理器"
-            "root_policy" -> "授权配置"
-            "superuser_profiles" -> "授权列表"
+            "native_manager" -> stringResource(R.string.runtime_cap_native_manager)
+            "root_policy" -> stringResource(R.string.runtime_cap_root_policy)
+            "superuser_profiles" -> stringResource(R.string.runtime_cap_superuser_profiles)
             "lkm" -> "LKM"
             "late_load" -> "Late Load"
-            "safe_mode" -> "安全模式"
-            "modules" -> "模块列表"
-            "module_control" -> "模块控制"
+            "safe_mode" -> stringResource(R.string.runtime_cap_safe_mode)
+            "modules" -> stringResource(R.string.runtime_cap_modules)
+            "module_control" -> stringResource(R.string.runtime_cap_module_control)
             "susfs" -> "SUSFS"
             "kpm" -> "KPM"
-            "features" -> "功能开关"
+            "features" -> stringResource(R.string.runtime_cap_features)
             else -> key
         }
     }
 
+@Composable
 private fun runtimeBackendLabel(backend: String): String = when (backend) {
-    "native" -> "原生控制"
-    "ksud" -> "KSU 兼容"
-    "su" -> "通用 su"
-    "kernel" -> "内核运行态"
+    "native" -> stringResource(R.string.runtime_backend_native)
+    "ksud" -> stringResource(R.string.runtime_backend_ksud)
+    "su" -> stringResource(R.string.runtime_backend_su)
+    "kernel" -> stringResource(R.string.runtime_backend_kernel)
     else -> backend
 }
 
@@ -1288,9 +1310,10 @@ private fun runtimeModuleSourceLabel(source: String): String {
     return labels.joinToString("+")
 }
 
+@Composable
 private fun runtimeModuleTypeLabel(module: AbkRuntimeModule): String = when (module.normalizedType()) {
-    "standard" -> "普通模块"
-    "builtin" -> "预编译模块"
+    "standard" -> stringResource(R.string.runtime_module_type_standard)
+    "builtin" -> stringResource(R.string.runtime_module_type_builtin)
     "kpm" -> "KPM"
     else -> module.normalizedType()
 }
@@ -1313,6 +1336,33 @@ private fun AbkRuntimeModule.typeOrder(): Int = when (normalizedType()) {
     "kpm" -> 2
     else -> 3
 }
+
+private data class RuntimeModuleDisplayGroup(
+    val groupName: String? = null,
+    val groupDescription: String? = null,
+    val modules: List<AbkRuntimeModule> = emptyList()
+)
+
+private fun groupRuntimeModulesForDisplay(modules: List<AbkRuntimeModule>): List<RuntimeModuleDisplayGroup> =
+    modules
+        .groupBy { module ->
+            module.groupId.trim().ifBlank {
+                module.groupName.trim()
+                    .takeIf { it.isNotBlank() }
+                    ?.let { "name:${it.lowercase()}" }
+                    ?: "single:${module.id}"
+            }
+        }
+        .values
+        .map { grouped ->
+            val first = grouped.first()
+            RuntimeModuleDisplayGroup(
+                groupName = first.groupName.trim().takeIf { it.isNotBlank() },
+                groupDescription = first.groupDescription.trim().takeIf { it.isNotBlank() },
+                modules = grouped.sortedBy { it.displayName().lowercase() }
+            )
+        }
+        .sortedBy { it.groupName.orEmpty().lowercase() }
 
 private fun internalRuntimeControlCapability(): String =
     intArrayOf(97, 98, 107, 95, 99, 111, 110, 116, 114, 111, 108)
